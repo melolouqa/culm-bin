@@ -1,0 +1,153 @@
+name: Release — build server binaries
+
+# Triggered when a draft release is published, or manually.
+# The local pipeline creates the draft release with models + plugin,
+# then this workflow builds server binaries on native runners and
+# uploads them to the same release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SOURCE_REPO: https://codeberg.org/melolouqa/culm.git
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: culm-server
+            bare_name: culm-server-linux-x86_64
+            archive: tar.gz
+
+          - name: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary: culm-server
+            bare_name: culm-server-linux-aarch64
+            archive: tar.gz
+            cross: true
+
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            binary: culm-server
+            bare_name: culm-server-darwin-x86_64
+            archive: tar.gz
+
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            binary: culm-server
+            bare_name: culm-server-darwin-aarch64
+            archive: tar.gz
+
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: culm-server.exe
+            bare_name: culm-server-windows-x86_64.exe
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clone source
+        shell: bash
+        run: |
+          git clone --depth 1 --branch main "$SOURCE_REPO" source
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: source/server
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        shell: bash
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cd source && cross build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }}
+          else
+            cd source && cargo build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }}
+          fi
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          ARCHIVE="culm-server-${TAG}-${{ matrix.target }}.tar.gz"
+          BARE="${{ matrix.bare_name }}"
+          BIN="source/server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
+          # Bare binary for ReaPack
+          cp "$BIN" "$BARE"
+
+          # Tarball with models.json for manual install
+          mkdir staging
+          cp "$BIN" staging/
+          cp source/models.json staging/
+          tar czf "$ARCHIVE" -C staging .
+
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "BARE=$BARE" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          ARCHIVE="culm-server-${TAG}-${{ matrix.target }}.zip"
+          BARE="${{ matrix.bare_name }}"
+          BIN="source/server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
+          # Bare binary for ReaPack
+          cp "$BIN" "$BARE"
+
+          # Zip with models.json for manual install
+          mkdir staging
+          cp "$BIN" staging/
+          cp source/models.json staging/
+          cd staging && 7z a -tzip "../$ARCHIVE" . && cd ..
+
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "BARE=$BARE" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release upload "$TAG" "$ARCHIVE" "$BARE" --clobber --repo "${{ github.repository }}"
