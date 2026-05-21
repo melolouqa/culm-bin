@@ -28,32 +28,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ── Linux x86_64 ──────────────────────────────────
+          # One binary per platform — all relevant GPU providers compiled in.
+          # At runtime, --device auto (default) probes available EPs in order
+          # and falls back to CPU. Users can also force --device cuda etc.
+
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: culm-server
             bare_name: culm-server-linux-x86_64
             archive: tar.gz
-            features: ""
+            features: cuda,rocm
 
-          - name: linux-x86_64-cuda
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: culm-server
-            bare_name: culm-server-linux-x86_64-cuda
-            archive: tar.gz
-            features: cuda
-
-          - name: linux-x86_64-rocm
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: culm-server
-            bare_name: culm-server-linux-x86_64-rocm
-            archive: tar.gz
-            features: rocm
-
-          # ── Linux aarch64 ─────────────────────────────────
           - name: linux-aarch64
             os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
@@ -63,7 +49,6 @@ jobs:
             cross: true
             features: ""
 
-          # ── macOS ─────────────────────────────────────────
           - name: macos-x86_64
             os: macos-13
             target: x86_64-apple-darwin
@@ -80,22 +65,13 @@ jobs:
             archive: tar.gz
             features: coreml
 
-          # ── Windows ───────────────────────────────────────
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: culm-server.exe
             bare_name: culm-server-windows-x86_64.exe
             archive: zip
-            features: directml
-
-          - name: windows-x86_64-cuda
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: culm-server.exe
-            bare_name: culm-server-windows-x86_64-cuda.exe
-            archive: zip
-            features: cuda
+            features: cuda,directml
 
     steps:
       - uses: actions/checkout@v5
