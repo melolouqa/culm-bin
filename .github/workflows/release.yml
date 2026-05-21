@@ -150,7 +150,7 @@ jobs:
       - name: Upload to release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
 
