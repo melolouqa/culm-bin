@@ -91,6 +91,11 @@ jobs:
           workspaces: source/server
           key: ${{ matrix.target }}
 
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux' && !matrix.cross
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
       - name: Install cross
         if: matrix.cross
         shell: bash
