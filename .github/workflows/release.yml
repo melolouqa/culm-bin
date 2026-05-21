@@ -19,8 +19,16 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   SOURCE_REPO: https://codeberg.org/melolouqa/culm.git
+  # ORT shared library versions — bundled alongside the binary.
+  # The binary uses load-dynamic (no ORT linked at build time).
+  ORT_VERSION: "1.24.4"
+  ORT_VERSION_MIGRAPHX: "1.24.2"
 
 jobs:
+  # ── Build ──────────────────────────────────────────────────────────
+  # One binary per platform (load-dynamic = no GPU SDK needed).
+  # Multiple GPU variants per platform share the same binary but bundle
+  # a different ORT shared library.
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -28,17 +36,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # One binary per platform — all relevant GPU providers compiled in.
-          # At runtime, --device auto (default) probes available EPs in order
-          # and falls back to CPU. Users can also force --device cuda etc.
+          - name: linux-x86_64-cuda
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: culm-server
+            bare_name: culm-server-linux-x86_64-cuda
+            archive: tar.gz
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-gpu-1.24.4.tgz
+            ort_lib: lib/libonnxruntime.so
 
-          - name: linux-x86_64
+          - name: linux-x86_64-rocm
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: culm-server
+            bare_name: culm-server-linux-x86_64-rocm
+            archive: tar.gz
+            ort_url: https://github.com/Looong01/onnxruntime-rocm-build/releases/download/v1.24.2/onnxruntime-linux-x64-migraphx-1.24.2.tgz
+            ort_lib: lib/libonnxruntime.so
+
+          - name: linux-x86_64-cpu
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: culm-server
             bare_name: culm-server-linux-x86_64
             archive: tar.gz
-            features: cuda,rocm
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
+            ort_lib: lib/libonnxruntime.so
 
           - name: linux-aarch64
             os: ubuntu-latest
@@ -47,7 +70,8 @@ jobs:
             bare_name: culm-server-linux-aarch64
             archive: tar.gz
             cross: true
-            features: ""
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-aarch64-1.24.4.tgz
+            ort_lib: lib/libonnxruntime.so
 
           - name: macos-x86_64
             os: macos-13
@@ -55,7 +79,8 @@ jobs:
             binary: culm-server
             bare_name: culm-server-darwin-x86_64
             archive: tar.gz
-            features: ""
+            ort_url: ""
+            ort_lib: ""
 
           - name: macos-aarch64
             os: macos-latest
@@ -63,15 +88,26 @@ jobs:
             binary: culm-server
             bare_name: culm-server-darwin-aarch64
             archive: tar.gz
-            features: coreml
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-arm64-1.24.4.tgz
+            ort_lib: lib/libonnxruntime.dylib
 
-          - name: windows-x86_64
+          - name: windows-x86_64-cuda
             os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: culm-server.exe
-            bare_name: culm-server-windows-x86_64.exe
+            bare_name: culm-server-windows-x86_64-cuda
             archive: zip
-            features: cuda,directml
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-gpu-1.24.4.zip
+            ort_lib: lib/onnxruntime.dll
+
+          - name: windows-x86_64-cpu
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: culm-server.exe
+            bare_name: culm-server-windows-x86_64
+            archive: zip
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip
+            ort_lib: lib/onnxruntime.dll
 
     steps:
       - uses: actions/checkout@v5
@@ -98,7 +134,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: source/server
-          key: ${{ matrix.target }}-${{ matrix.features }}
+          key: ${{ matrix.target }}
 
       - name: Install cross
         if: matrix.cross
@@ -108,34 +144,61 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          FEATURES="${{ matrix.features }}"
-          FEAT_FLAG=""
-          if [ -n "$FEATURES" ]; then
-            FEAT_FLAG="--features $FEATURES"
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cd source && cross build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }}
+          else
+            cd source && cargo build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }}
           fi
 
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cd source && cross build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }} $FEAT_FLAG
+      # Download pre-built ORT shared library (CUDA/ROCm/CPU variant)
+      - name: Download ORT library
+        if: matrix.ort_url != ''
+        shell: bash
+        run: |
+          mkdir -p ort-download
+          echo "Downloading ${{ matrix.ort_url }}..."
+          curl -fL "${{ matrix.ort_url }}" -o ort-archive
+
+          # Extract — handles both .tgz and .zip
+          if [[ "${{ matrix.ort_url }}" == *.tgz ]] || [[ "${{ matrix.ort_url }}" == *.tar.gz ]]; then
+            tar xzf ort-archive -C ort-download
           else
-            cd source && cargo build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }} $FEAT_FLAG
+            unzip -q ort-archive -d ort-download
           fi
+
+          # Find the shared library inside the extracted tree
+          ORT_LIB_NAME="${{ matrix.ort_lib }}"
+          ORT_LIB_NAME=$(basename "$ORT_LIB_NAME")
+          FOUND=$(find ort-download -name "$ORT_LIB_NAME" -type f | head -1)
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: Could not find $ORT_LIB_NAME in ORT archive"
+            find ort-download -type f
+            exit 1
+          fi
+          echo "Found ORT library: $FOUND"
+          cp "$FOUND" ./ort-lib-file
+          echo "ORT_LIB_FILE=ort-lib-file" >> "$GITHUB_ENV"
+          echo "ORT_LIB_BASENAME=$ORT_LIB_NAME" >> "$GITHUB_ENV"
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          ARCHIVE="culm-server-${TAG}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="culm-server-${TAG}-${{ matrix.name }}.tar.gz"
           BARE="${{ matrix.bare_name }}"
           BIN="source/server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
           # Bare binary for ReaPack
           cp "$BIN" "$BARE"
 
-          # Tarball with models.json for manual install
+          # Tarball: binary + models.json + ORT library
           mkdir staging
           cp "$BIN" staging/
           cp source/models.json staging/
+          if [ -n "${ORT_LIB_FILE:-}" ]; then
+            cp "$ORT_LIB_FILE" "staging/$ORT_LIB_BASENAME"
+          fi
           tar czf "$ARCHIVE" -C staging .
 
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
@@ -146,17 +209,20 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          ARCHIVE="culm-server-${TAG}-${{ matrix.target }}.zip"
+          ARCHIVE="culm-server-${TAG}-${{ matrix.name }}.zip"
           BARE="${{ matrix.bare_name }}"
           BIN="source/server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
           # Bare binary for ReaPack
           cp "$BIN" "$BARE"
 
-          # Zip with models.json for manual install
+          # Zip: binary + models.json + ORT library
           mkdir staging
           cp "$BIN" staging/
           cp source/models.json staging/
+          if [ -n "${ORT_LIB_FILE:-}" ]; then
+            cp "$ORT_LIB_FILE" "staging/$ORT_LIB_BASENAME"
+          fi
           cd staging && 7z a -tzip "../$ARCHIVE" . && cd ..
 
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
