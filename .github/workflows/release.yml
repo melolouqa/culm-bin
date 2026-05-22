@@ -19,16 +19,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   SOURCE_REPO: https://codeberg.org/melolouqa/culm.git
-  # ORT shared library versions — bundled alongside the binary.
-  # The binary uses load-dynamic (no ORT linked at build time).
   ORT_VERSION: "1.24.4"
   ORT_VERSION_MIGRAPHX: "1.24.2"
 
 jobs:
-  # ── Build ──────────────────────────────────────────────────────────
-  # One binary per platform (load-dynamic = no GPU SDK needed).
-  # Multiple GPU variants per platform share the same binary but bundle
-  # a different ORT shared library.
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -36,32 +30,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64-cuda
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: culm-server
-            bare_name: culm-server-linux-x86_64-cuda
-            archive: tar.gz
-            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-gpu-1.24.4.tgz
-            ort_lib: lib/libonnxruntime.so
-
-          - name: linux-x86_64-rocm
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: culm-server
-            bare_name: culm-server-linux-x86_64-rocm
-            archive: tar.gz
-            ort_url: https://github.com/Looong01/onnxruntime-rocm-build/releases/download/v1.24.2/onnxruntime-linux-x64-migraphx-1.24.2.tgz
-            ort_lib: lib/libonnxruntime.so
-
-          - name: linux-x86_64-cpu
+          - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: culm-server
             bare_name: culm-server-linux-x86_64
             archive: tar.gz
-            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
-            ort_lib: lib/libonnxruntime.so
+            ort_variants: |
+              cuda https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-gpu-1.24.4.tgz
+              rocm https://github.com/Looong01/onnxruntime-rocm-build/releases/download/v1.24.2/onnxruntime-linux-x64-migraphx-1.24.2.tgz
+              cpu https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
 
           - name: linux-aarch64
             os: ubuntu-latest
@@ -70,17 +48,17 @@ jobs:
             bare_name: culm-server-linux-aarch64
             archive: tar.gz
             cross: true
-            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-aarch64-1.24.4.tgz
-            ort_lib: lib/libonnxruntime.so
+            ort_variants: |
+              cpu https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-aarch64-1.24.4.tgz
 
           - name: macos-x86_64
-            os: macos-13
+            os: macos-15-intel
             target: x86_64-apple-darwin
             binary: culm-server
             bare_name: culm-server-darwin-x86_64
             archive: tar.gz
-            ort_url: ""
-            ort_lib: ""
+            ort_variants: |
+              cpu https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-x86_64-1.24.4.tgz
 
           - name: macos-aarch64
             os: macos-latest
@@ -88,26 +66,18 @@ jobs:
             binary: culm-server
             bare_name: culm-server-darwin-aarch64
             archive: tar.gz
-            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-arm64-1.24.4.tgz
-            ort_lib: lib/libonnxruntime.dylib
+            ort_variants: |
+              cpu https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-arm64-1.24.4.tgz
 
-          - name: windows-x86_64-cuda
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: culm-server.exe
-            bare_name: culm-server-windows-x86_64-cuda
-            archive: zip
-            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-gpu-1.24.4.zip
-            ort_lib: lib/onnxruntime.dll
-
-          - name: windows-x86_64-cpu
+          - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: culm-server.exe
             bare_name: culm-server-windows-x86_64
             archive: zip
-            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip
-            ort_lib: lib/onnxruntime.dll
+            ort_variants: |
+              cuda https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-gpu-1.24.4.zip
+              cpu https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip
 
     steps:
       - uses: actions/checkout@v5
@@ -150,49 +120,63 @@ jobs:
             cd source && cargo build --release --manifest-path server/Cargo.toml --target ${{ matrix.target }}
           fi
 
-      # Download pre-built ORT shared library (CUDA/ROCm/CPU variant)
-      - name: Download ORT library
-        if: matrix.ort_url != ''
+      # Download all ORT variants into ort/<variant>/ and collect
+      # individual library files for ReaPack upload.
+      - name: Download ORT libraries
         shell: bash
         run: |
-          mkdir -p ort-download
-          echo "Downloading ${{ matrix.ort_url }}..."
-          curl -fL "${{ matrix.ort_url }}" -o ort-archive
+          mkdir -p staging-ort
+          # Track individual files for upload (variant-prefixed names)
+          ORT_UPLOAD_FILES=""
 
-          # Extract — handles both .tgz and .zip
-          if [[ "${{ matrix.ort_url }}" == *.tgz ]] || [[ "${{ matrix.ort_url }}" == *.tar.gz ]]; then
-            tar xzf ort-archive -C ort-download
-          else
-            unzip -q ort-archive -d ort-download
-          fi
+          echo '${{ matrix.ort_variants }}' | while read -r VARIANT URL; do
+            [ -z "$VARIANT" ] && continue
+            echo "=== ORT variant: $VARIANT ==="
 
-          # Find the lib directory and collect all shared libraries.
-          # ORT archives contain symlinks (libonnxruntime.so → .so.1.24.x)
-          # and provider libs (libonnxruntime_providers_cuda.so, etc.)
-          # that must all be bundled for GPU support to work at runtime.
-          LIB_DIR=$(find ort-download -type d -name lib | head -1)
-          if [ -z "$LIB_DIR" ]; then
-            echo "ERROR: Could not find lib/ directory in ORT archive"
-            find ort-download -type f -o -type l
-            exit 1
-          fi
+            mkdir -p "ort-dl-$VARIANT"
+            curl -fL "$URL" -o "ort-archive-$VARIANT"
 
-          mkdir -p ort-libs
-          # Copy shared libraries, resolving symlinks into concrete copies.
-          # Matches .so, .so.1, .so.1.24.4, .dylib, .dll — skips .dSYM dirs.
-          for f in "$LIB_DIR"/*; do
-            [ -f "$f" ] || [ -L "$f" ] || continue
-            BASENAME=$(basename "$f")
-            case "$BASENAME" in
-              *.so|*.so.*|*.dylib|*.dll) ;;
-              *) continue ;;
-            esac
-            cp -L "$f" "ort-libs/$BASENAME"
-            echo "  bundling $BASENAME"
+            if [[ "$URL" == *.tgz ]] || [[ "$URL" == *.tar.gz ]]; then
+              tar xzf "ort-archive-$VARIANT" -C "ort-dl-$VARIANT"
+            else
+              unzip -q "ort-archive-$VARIANT" -d "ort-dl-$VARIANT"
+            fi
+
+            LIB_DIR=$(find "ort-dl-$VARIANT" -type d -name lib | head -1)
+            if [ -z "$LIB_DIR" ]; then
+              echo "ERROR: no lib/ in $VARIANT archive"
+              find "ort-dl-$VARIANT" -type f -o -type l
+              exit 1
+            fi
+
+            mkdir -p "staging-ort/$VARIANT"
+            for f in "$LIB_DIR"/*; do
+              [ -f "$f" ] || [ -L "$f" ] || continue
+              BASENAME=$(basename "$f")
+              case "$BASENAME" in
+                *.so|*.so.*|*.dylib|*.dll) ;;
+                *) continue ;;
+              esac
+              cp -L "$f" "staging-ort/$VARIANT/$BASENAME"
+
+              # For ReaPack individual uploads, skip versioned copies
+              # (e.g. libonnxruntime.so.1, .so.1.24.4) — they're redundant
+              # since init_ort() loads via explicit path.
+              case "$BASENAME" in
+                *.so.[0-9]*|*.dylib.[0-9]*) continue ;;
+              esac
+
+              UPLOAD_NAME="ort--${{ matrix.name }}--${VARIANT}--${BASENAME}"
+              cp -L "$f" "$UPLOAD_NAME"
+              echo "$UPLOAD_NAME" >> ort-upload-list.txt
+              echo "  $BASENAME → $UPLOAD_NAME"
+            done
+
+            rm -rf "ort-dl-$VARIANT" "ort-archive-$VARIANT"
           done
 
-          ls -la ort-libs/
-          echo "ORT_LIBS_DIR=ort-libs" >> "$GITHUB_ENV"
+          echo "=== ORT staging ==="
+          find staging-ort -type f | sort
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
@@ -203,15 +187,13 @@ jobs:
           BARE="${{ matrix.bare_name }}"
           BIN="source/server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
-          # Bare binary for ReaPack
           cp "$BIN" "$BARE"
 
-          # Tarball: binary + models.json + ORT libraries
           mkdir staging
           cp "$BIN" staging/
           cp source/models.json staging/
-          if [ -d "${ORT_LIBS_DIR:-}" ]; then
-            cp "$ORT_LIBS_DIR"/* staging/
+          if [ -d staging-ort ]; then
+            cp -r staging-ort staging/ort
           fi
           tar czf "$ARCHIVE" -C staging .
 
@@ -227,15 +209,13 @@ jobs:
           BARE="${{ matrix.bare_name }}"
           BIN="source/server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
-          # Bare binary for ReaPack
           cp "$BIN" "$BARE"
 
-          # Zip: binary + models.json + ORT libraries
           mkdir staging
           cp "$BIN" staging/
           cp source/models.json staging/
-          if [ -d "${ORT_LIBS_DIR:-}" ]; then
-            cp "$ORT_LIBS_DIR"/* staging/
+          if [ -d staging-ort ]; then
+            cp -r staging-ort staging/ort
           fi
           cd staging && 7z a -tzip "../$ARCHIVE" . && cd ..
 
@@ -249,7 +229,6 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
 
-          # Get release ID (supports drafts)
           RELEASE_ID=$(curl -sf \
             -H "Authorization: token ${GH_TOKEN}" \
             "https://api.github.com/repos/${{ github.repository }}/releases" \
@@ -261,11 +240,17 @@ jobs:
           else: sys.exit(1)
           ")
 
-          for FILE in "$ARCHIVE" "$BARE"; do
+          # Collect all files to upload: archive, bare binary, individual ORT libs
+          UPLOAD_LIST="$ARCHIVE $BARE"
+          if [ -f ort-upload-list.txt ]; then
+            UPLOAD_LIST="$UPLOAD_LIST $(cat ort-upload-list.txt | tr '\n' ' ')"
+          fi
+
+          for FILE in $UPLOAD_LIST; do
+            [ -f "$FILE" ] || continue
             NAME=$(basename "$FILE")
             echo "Uploading $NAME..."
 
-            # Delete existing asset if present (--clobber equivalent)
             EXISTING=$(curl -sf \
               -H "Authorization: token ${GH_TOKEN}" \
               "https://api.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?per_page=100" \
