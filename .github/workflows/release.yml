@@ -166,19 +166,33 @@ jobs:
             unzip -q ort-archive -d ort-download
           fi
 
-          # Find the shared library inside the extracted tree
-          ORT_LIB_NAME="${{ matrix.ort_lib }}"
-          ORT_LIB_NAME=$(basename "$ORT_LIB_NAME")
-          FOUND=$(find ort-download -name "$ORT_LIB_NAME" -type f | head -1)
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: Could not find $ORT_LIB_NAME in ORT archive"
-            find ort-download -type f
+          # Find the lib directory and collect all shared libraries.
+          # ORT archives contain symlinks (libonnxruntime.so → .so.1.24.x)
+          # and provider libs (libonnxruntime_providers_cuda.so, etc.)
+          # that must all be bundled for GPU support to work at runtime.
+          LIB_DIR=$(find ort-download -type d -name lib | head -1)
+          if [ -z "$LIB_DIR" ]; then
+            echo "ERROR: Could not find lib/ directory in ORT archive"
+            find ort-download -type f -o -type l
             exit 1
           fi
-          echo "Found ORT library: $FOUND"
-          cp "$FOUND" ./ort-lib-file
-          echo "ORT_LIB_FILE=ort-lib-file" >> "$GITHUB_ENV"
-          echo "ORT_LIB_BASENAME=$ORT_LIB_NAME" >> "$GITHUB_ENV"
+
+          mkdir -p ort-libs
+          # Copy shared libraries, resolving symlinks into concrete copies.
+          # Matches .so, .so.1, .so.1.24.4, .dylib, .dll — skips .dSYM dirs.
+          for f in "$LIB_DIR"/*; do
+            [ -f "$f" ] || [ -L "$f" ] || continue
+            BASENAME=$(basename "$f")
+            case "$BASENAME" in
+              *.so|*.so.*|*.dylib|*.dll) ;;
+              *) continue ;;
+            esac
+            cp -L "$f" "ort-libs/$BASENAME"
+            echo "  bundling $BASENAME"
+          done
+
+          ls -la ort-libs/
+          echo "ORT_LIBS_DIR=ort-libs" >> "$GITHUB_ENV"
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
@@ -192,12 +206,12 @@ jobs:
           # Bare binary for ReaPack
           cp "$BIN" "$BARE"
 
-          # Tarball: binary + models.json + ORT library
+          # Tarball: binary + models.json + ORT libraries
           mkdir staging
           cp "$BIN" staging/
           cp source/models.json staging/
-          if [ -n "${ORT_LIB_FILE:-}" ]; then
-            cp "$ORT_LIB_FILE" "staging/$ORT_LIB_BASENAME"
+          if [ -d "${ORT_LIBS_DIR:-}" ]; then
+            cp "$ORT_LIBS_DIR"/* staging/
           fi
           tar czf "$ARCHIVE" -C staging .
 
@@ -216,12 +230,12 @@ jobs:
           # Bare binary for ReaPack
           cp "$BIN" "$BARE"
 
-          # Zip: binary + models.json + ORT library
+          # Zip: binary + models.json + ORT libraries
           mkdir staging
           cp "$BIN" staging/
           cp source/models.json staging/
-          if [ -n "${ORT_LIB_FILE:-}" ]; then
-            cp "$ORT_LIB_FILE" "staging/$ORT_LIB_BASENAME"
+          if [ -d "${ORT_LIBS_DIR:-}" ]; then
+            cp "$ORT_LIBS_DIR"/* staging/
           fi
           cd staging && 7z a -tzip "../$ARCHIVE" . && cd ..
 
