@@ -51,7 +51,7 @@ jobs:
             ort_variants: |
               cpu https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-aarch64-1.24.4.tgz
 
-- name: macos-aarch64
+          - name: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
             binary: culm-server
