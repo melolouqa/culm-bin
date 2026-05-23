@@ -1,8 +1,8 @@
 # culm-bin
 
-[![Release — build server binaries](https://github.com/melolouqa/culm-bin/actions/workflows/release.yml/badge.svg)](https://github.com/melolouqa/culm-bin/actions/workflows/release.yml)
+[![Server binaries](https://github.com/melolouqa/culm-bin/actions/workflows/release.yml/badge.svg)](https://github.com/melolouqa/culm-bin/actions/workflows/release.yml)
 
-CULM Unearths Latent Multitracks --- binary and model releases
+CULM Unmix Lost Melodies --- binary and model releases
 
 This repo is only used for binary releases. For full source code, please visit https://codeberg.org/melolouqa/culm
 

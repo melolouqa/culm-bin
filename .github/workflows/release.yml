@@ -1,4 +1,4 @@
-name: Release — build server binaries
+name: Server binaries
 
 # Triggered when a draft release is published, or manually.
 # The local pipeline creates the draft release with models + plugin,
