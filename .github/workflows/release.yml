@@ -219,17 +219,29 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
+          API="https://api.github.com/repos/${{ github.repository }}"
 
+          # Find or create the release
           RELEASE_ID=$(curl -sf \
             -H "Authorization: token ${GH_TOKEN}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            "$API/releases" \
             | python3 -c "
           import json, sys
           releases = json.load(sys.stdin)
           r = next((r for r in releases if r['tag_name'] == '${TAG}'), None)
-          if r: print(r['id'])
-          else: sys.exit(1)
+          print(r['id'] if r else '')
           ")
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Creating release ${TAG}..."
+            RELEASE_ID=$(curl -sf -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"culm ${TAG}\",\"body\":\"Release ${TAG}.\",\"draft\":false}" \
+              "$API/releases" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+            echo "  created release ID: $RELEASE_ID"
+          fi
 
           # Collect all files to upload: archive, bare binary, individual ORT libs
           UPLOAD_LIST="$ARCHIVE $BARE"
